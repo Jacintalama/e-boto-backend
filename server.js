@@ -1,165 +1,101 @@
+// server.js
+require("dotenv").config();
 const express = require("express");
+const cors = require("cors");
 const path = require("path");
-const fs = require("fs");
-const multer = require("multer");
-const { Candidate } = require("../../models"); // adjust if your models path is different
+const cookieParser = require("cookie-parser");
 
-const router = express.Router();
+const app = express();
 
-/** ---------- Uploads setup ---------- */
-// Save files under PROJECT_ROOT/uploads/candidates
-const ROOT_DIR = path.join(__dirname, "..", "..");
-const UPLOAD_DIR = path.join(ROOT_DIR, "uploads", "candidates");
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+/* ---- Trust proxy (for secure cookies on prod) ---- */
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-  filename: (_req, file, cb) => {
-    const safe = file.originalname.replace(/[^\w.-]/g, "_");
-    cb(null, `${Date.now()}-${safe}`);
+/* ---- DB ---- */
+const db = require(path.join(process.cwd(), "models"));
+const { sequelize } = db;
+
+/* ---- CORS ---- */
+const allowlist = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  origin(origin, cb) {
+    // allow SSR / same-origin / tools with no Origin header
+    if (!origin) return cb(null, true);
+    if (allowlist.length === 0 || allowlist.includes(origin)) return cb(null, true);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
   },
-});
-const fileFilter = (_req, file, cb) => {
-  if (file.mimetype && file.mimetype.startsWith("image/")) return cb(null, true);
-  cb(new Error("Only image uploads are allowed"));
+  credentials: true,
 };
-const upload = multer({ storage, fileFilter });
 
-/** Helper to attach absolute photoUrl */
-function withPhotoUrl(req, row) {
-  const obj = row.toJSON ? row.toJSON() : row;
-  if (obj.photoPath) obj.photoUrl = `${req.protocol}://${req.get("host")}${obj.photoPath}`;
-  return obj;
-}
+// Core CORS (most cases this is enough)
+app.use(cors(corsOptions));
+// ✅ Express 5 preflight handlers (use RegExp; avoid "*" or ":path*")
+app.options(/^\/api\/.*$/, cors(corsOptions));
+app.options(/^\/auth\/.*$/, cors(corsOptions));
+// app.options(/^\/uploads\/.*$/, cors(corsOptions)); // enable only if you truly need cross-origin for uploads
 
-/** Safe unlink (handles leading slash on stored path) */
-function safeUnlink(relPath) {
-  try {
-    if (!relPath) return;
-    const cleaned = String(relPath).replace(/^[\\/]/, ""); // remove leading / or \
-    const abs = path.join(ROOT_DIR, cleaned);
-    fs.unlinkSync(abs);
-  } catch (_) {}
-}
+app.use(express.json({ limit: "2mb" }));
+app.use(cookieParser());
 
-/** ---------- Routes ---------- */
+/* ---- Static uploads ---- */
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-// LIST (optional ?level=College)
-router.get("/", async (req, res) => {
-  try {
-    const where = {};
-    if (req.query.level) where.level = req.query.level;
-    const rows = await Candidate.findAll({
-      where,
-      order: [["created_at", "DESC"]],
-    });
-    res.json(rows.map((r) => withPhotoUrl(req, r)));
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Failed to fetch candidates" });
-  }
+/* ---- Auth middleware (single source of truth) ---- */
+const { requireAuth, requireRole } = require(path.join(process.cwd(), "src", "middleware", "auth"));
+
+/* ---- Routers ---- */
+const candidateRouter = require(path.join(process.cwd(), "src", "routes", "candidate"));
+const authRouter = require(path.join(process.cwd(), "src", "routes", "auth"));
+const votersRouter = require(path.join(process.cwd(), "src", "routes", "voters"));
+
+/* ---- Mount routes ---- */
+// Admin-only groups (avoid duplicate guards inside the routers)
+app.use("/api/candidates", requireAuth, requireRole("admin"), candidateRouter);
+app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
+
+// Auth routes (login/register/me)
+app.use("/auth", authRouter);
+app.use("/api/auth", authRouter);
+app.use("/api", authRouter); // allows /api/login, /api/register, /api/auth/me
+
+/* ---- Health ---- */
+app.get("/", (_req, res) => {
+  res.send("🚀 Backend API is running. Use /api/... endpoints.");
+});
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, env: process.env.NODE_ENV || "dev" });
 });
 
-// GET ONE
-router.get("/:id", async (req, res) => {
-  try {
-    const row = await Candidate.findByPk(req.params.id);
-    if (!row) return res.status(404).json({ error: "Not found" });
-    res.json(withPhotoUrl(req, row));
-  } catch (e) {
-    res.status(500).json({ error: "Failed to fetch candidate" });
-  }
+/* ---- Debug (remove in prod) ---- */
+app.get("/api/_debug/whoami", (req, res) => {
+  res.json({
+    cookieNames: Object.keys(req.cookies || {}),
+    hasAuthHeader: Boolean(req.headers.authorization),
+    origin: req.headers.origin || null,
+  });
+});
+app.get("/api/_debug/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
 });
 
-// CREATE
-router.post("/", upload.single("photo"), async (req, res) => {
-  try {
-    const {
-      level,
-      position,
-      partyList,
-      firstName,
-      middleName,
-      lastName,
-      gender,
-      year,
-    } = req.body;
-
-    const photoPath = req.file ? `/uploads/candidates/${req.file.filename}` : null;
-
-    const created = await Candidate.create({
-      level: level || null,
-      position,
-      partyList,
-      firstName,
-      middleName: middleName || null,
-      lastName,
-      gender,
-      year,
-      photoPath,
-    });
-
-    res.status(201).json(withPhotoUrl(req, created));
-  } catch (e) {
-    console.error(e);
-    res.status(400).json({ error: e.message || "Failed to create candidate" });
-  }
+/* ---- Error handler ---- */
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  const isCORS = String(err?.message || "").startsWith("Not allowed by CORS");
+  const status = isCORS ? 403 : 500;
+  res.status(status).json({ error: err.message || "Server error" });
 });
 
-// UPDATE (photo optional)
-router.put("/:id", upload.single("photo"), async (req, res) => {
-  try {
-    const row = await Candidate.findByPk(req.params.id);
-    if (!row) return res.status(404).json({ error: "Not found" });
+/* ---- Start ---- */
+const PORT = process.env.PORT || 4000;
+sequelize
+  .authenticate()
+  .then(() => console.log("✅ DB connected"))
+  .catch((err) => console.error("❌ DB connection failed:", err.message));
 
-    const {
-      level,
-      position,
-      partyList,
-      firstName,
-      middleName,
-      lastName,
-      gender,
-      year,
-    } = req.body;
-
-    if (req.file) {
-      // replace existing photo
-      safeUnlink(row.photoPath);
-      row.photoPath = `/uploads/candidates/${req.file.filename}`;
-    }
-
-    // update fields if provided
-    if (level !== undefined) row.level = level || null;
-    if (position !== undefined) row.position = position;
-    if (partyList !== undefined) row.partyList = partyList;
-    if (firstName !== undefined) row.firstName = firstName;
-    if (middleName !== undefined) row.middleName = middleName || null;
-    if (lastName !== undefined) row.lastName = lastName;
-    if (gender !== undefined) row.gender = gender;
-    if (year !== undefined) row.year = year;
-
-    await row.save();
-    res.json(withPhotoUrl(req, row));
-  } catch (e) {
-    console.error(e);
-    res.status(400).json({ error: e.message || "Failed to update candidate" });
-  }
-});
-
-// DELETE
-router.delete("/:id", async (req, res) => {
-  try {
-    const row = await Candidate.findByPk(req.params.id);
-    if (!row) return res.status(404).json({ error: "Not found" });
-
-    safeUnlink(row.photoPath);
-    await row.destroy();
-    res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: "Failed to delete candidate" });
-  }
-});
-
-module.exports = router;
+app.listen(PORT, () => console.log(`✅ Server listening on :${PORT}`));

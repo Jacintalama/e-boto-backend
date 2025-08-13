@@ -1,3 +1,4 @@
+// models/candidate.js
 "use strict";
 module.exports = (sequelize, DataTypes) => {
   const Candidate = sequelize.define(
@@ -10,7 +11,7 @@ module.exports = (sequelize, DataTypes) => {
       },
       level: {
         type: DataTypes.ENUM("Elementary", "JHS", "SHS", "College"),
-        allowNull: true, // keep optional; your UI sends this
+        allowNull: true,
       },
       firstName: {
         type: DataTypes.STRING(100),
@@ -43,13 +44,14 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.ENUM("Male", "Female"),
         allowNull: false,
       },
+      // ← changed to TEXT to allow long descriptive strings
       year: {
-        type: DataTypes.STRING(50), // ex: "1st Year", "Grade 11"
+        type: DataTypes.TEXT,
         allowNull: false,
       },
       photoPath: {
         type: DataTypes.STRING,
-        allowNull: true, // file is optional on edit
+        allowNull: true,
       },
       // Virtual field for convenience
       fullName: {
@@ -60,14 +62,15 @@ module.exports = (sequelize, DataTypes) => {
           const ln = this.getDataValue("lastName") || "";
           return [fn, mn, ln].filter(Boolean).join(" ");
         },
-        set(_val) {
+        set() {
           throw new Error("Do not set `fullName` directly.");
         },
       },
     },
     {
       tableName: "candidates",
-      underscored: true,
+      underscored: true, // maps firstName -> first_name, etc.
+      // timestamps true by default: created_at / updated_at due to underscored
     }
   );
 

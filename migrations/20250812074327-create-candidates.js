@@ -44,8 +44,9 @@ module.exports = {
         type: DataTypes.ENUM("Male", "Female"),
         allowNull: false,
       },
+      // ← changed to TEXT so you can store long, descriptive values
       year: {
-        type: DataTypes.STRING(50),
+        type: DataTypes.TEXT,
         allowNull: false,
       },
       photo_path: {

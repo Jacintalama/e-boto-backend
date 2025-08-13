@@ -1,31 +1,107 @@
+// src/routes/candidate.js
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const multer = require("multer");
-const { Candidate } = require("../models");
 
 const router = express.Router();
 
-// ensure upload dir
-const uploadDir = path.join(__dirname, "..", "uploads", "candidates");
-fs.mkdirSync(uploadDir, { recursive: true });
+/** ---------- Resolve project root + models ---------- */
+const ROOT_DIR = path.join(__dirname, "..", ".."); // project root
+const db = require(path.join(ROOT_DIR, "models")); // models/index.js must export Candidate
+const { Candidate } = db;
+
+/** ---------- Uploads setup ---------- */
+// Save files under PROJECT_ROOT/uploads/candidates
+const UPLOAD_DIR = path.join(ROOT_DIR, "uploads", "candidates");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
   filename: (_req, file, cb) => {
-    const safe = file.originalname.replace(/[^\w.-]/g, "_");
-    const name = `${Date.now()}-${safe}`;
-    cb(null, name);
+    const safe = String(file.originalname || "photo").replace(/[^\w.-]/g, "_");
+    cb(null, `${Date.now()}-${safe.slice(-100)}`);
   },
 });
 const fileFilter = (_req, file, cb) => {
-  if (/^image\//.test(file.mimetype)) return cb(null, true);
+  if (file?.mimetype?.startsWith("image/")) return cb(null, true);
   cb(new Error("Only image uploads are allowed"));
 };
 const upload = multer({ storage, fileFilter });
 
-// Create
-router.post("/", upload.single("photo"), async (req, res) => {
+// Wrap multer so errors return JSON (not HTML)
+function runUpload(req, res, next) {
+  upload.single("photo")(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}
+
+/** Helper to attach absolute photoUrl */
+function withPhotoUrl(req, row) {
+  const obj = row?.toJSON ? row.toJSON() : row;
+  if (obj?.photoPath) obj.photoUrl = `${req.protocol}://${req.get("host")}${obj.photoPath}`;
+  return obj;
+}
+
+/** Safe unlink (handles leading slash on stored path) */
+function safeUnlink(relPath) {
+  try {
+    if (!relPath) return;
+    const cleaned = String(relPath).replace(/^[\\/]/, "");
+    const abs = path.join(ROOT_DIR, cleaned);
+    fs.unlinkSync(abs);
+  } catch (_) {}
+}
+
+/** Coerce any input into a clean string (never "NaN") */
+function toYearString(v) {
+  const s = (typeof v === "string" ? v : String(v ?? "")).trim();
+  return s === "NaN" ? "" : s;
+}
+
+/** Prefer createdAt; fall back to created_at; else id */
+const createdField =
+  Candidate?.rawAttributes?.createdAt
+    ? "createdAt"
+    : Candidate?.rawAttributes?.created_at
+    ? "created_at"
+    : "id";
+
+/** ---------- Routes ---------- */
+
+// LIST (optional ?level=College)
+router.get("/", async (req, res) => {
+  try {
+    const where = {};
+    if (req.query.level) where.level = req.query.level;
+
+    const rows = await Candidate.findAll({
+      where,
+      order: [[createdField, "DESC"]],
+    });
+
+    res.json(rows.map((r) => withPhotoUrl(req, r)));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to fetch candidates" });
+  }
+});
+
+// GET ONE
+router.get("/:id", async (req, res) => {
+  try {
+    const row = await Candidate.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ error: "Not found" });
+    res.json(withPhotoUrl(req, row));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to fetch candidate" });
+  }
+});
+
+// CREATE
+router.post("/", runUpload, async (req, res) => {
   try {
     const {
       level,
@@ -38,9 +114,17 @@ router.post("/", upload.single("photo"), async (req, res) => {
       year,
     } = req.body;
 
+    const yearStr = toYearString(year);
+    if (!yearStr) return res.status(400).json({ error: "Year is required." });
+    if (/^\d+$/.test(yearStr)) {
+      return res
+        .status(400)
+        .json({ error: 'Year must be descriptive (e.g., "1st Year", "Grade 11"), not just digits.' });
+    }
+
     const photoPath = req.file ? `/uploads/candidates/${req.file.filename}` : null;
 
-    const candidate = await Candidate.create({
+    const created = await Candidate.create({
       level: level || null,
       position,
       partyList,
@@ -48,56 +132,22 @@ router.post("/", upload.single("photo"), async (req, res) => {
       middleName: middleName || null,
       lastName,
       gender,
-      year,
+      year: yearStr, // store as words (TEXT)
       photoPath,
     });
 
-    // Attach absolute photoUrl for convenience
-    const json = candidate.toJSON();
-    if (photoPath) json.photoUrl = `${req.protocol}://${req.get("host")}${photoPath}`;
-    res.status(201).json(json);
-  } catch (err) {
-    console.error(err);
-    res.status(400).json({ error: err.message || "Failed to create candidate" });
+    res.status(201).json(withPhotoUrl(req, created));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: e.message || "Failed to create candidate" });
   }
 });
 
-// List (optional filter by level)
-router.get("/", async (req, res) => {
+// UPDATE (photo optional)
+router.put("/:id", runUpload, async (req, res) => {
   try {
-    const where = {};
-    if (req.query.level) where.level = req.query.level;
-    const rows = await Candidate.findAll({ where, order: [["created_at", "DESC"]] });
-    const data = rows.map((c) => {
-      const o = c.toJSON();
-      if (o.photoPath) o.photoUrl = `${req.protocol}://${req.get("host")}${o.photoPath}`;
-      return o;
-    });
-    res.json(data);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch candidates" });
-  }
-});
-
-// Get one
-router.get("/:id", async (req, res) => {
-  try {
-    const c = await Candidate.findByPk(req.params.id);
-    if (!c) return res.status(404).json({ error: "Not found" });
-    const o = c.toJSON();
-    if (o.photoPath) o.photoUrl = `${req.protocol}://${req.get("host")}${o.photoPath}`;
-    res.json(o);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to fetch candidate" });
-  }
-});
-
-// Update (photo optional)
-router.put("/:id", upload.single("photo"), async (req, res) => {
-  try {
-    const c = await Candidate.findByPk(req.params.id);
-    if (!c) return res.status(404).json({ error: "Not found" });
+    const row = await Candidate.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ error: "Not found" });
 
     const {
       level,
@@ -110,52 +160,48 @@ router.put("/:id", upload.single("photo"), async (req, res) => {
       year,
     } = req.body;
 
-    // handle new photo
     if (req.file) {
-      // delete old file if exists
-      if (c.photoPath) {
-        try {
-          fs.unlinkSync(path.join(__dirname, "..", c.photoPath));
-        } catch (_) {}
-      }
-      c.photoPath = `/uploads/candidates/${req.file.filename}`;
+      safeUnlink(row.photoPath);
+      row.photoPath = `/uploads/candidates/${req.file.filename}`;
     }
 
-    c.level = level ?? c.level;
-    c.position = position ?? c.position;
-    c.partyList = partyList ?? c.partyList;
-    c.firstName = firstName ?? c.firstName;
-    c.middleName = middleName ?? c.middleName;
-    c.lastName = lastName ?? c.lastName;
-    c.gender = gender ?? c.gender;
-    c.year = year ?? c.year;
+    if (level !== undefined) row.level = level || null;
+    if (position !== undefined) row.position = position;
+    if (partyList !== undefined) row.partyList = partyList;
+    if (firstName !== undefined) row.firstName = firstName;
+    if (middleName !== undefined) row.middleName = middleName || null;
+    if (lastName !== undefined) row.lastName = lastName;
+    if (gender !== undefined) row.gender = gender;
+    if (year !== undefined) {
+      const yearStr = toYearString(year);
+      if (!yearStr) return res.status(400).json({ error: "Year cannot be empty." });
+      if (/^\d+$/.test(yearStr)) {
+        return res
+          .status(400)
+          .json({ error: 'Year must be descriptive (e.g., "1st Year", "Grade 11"), not just digits.' });
+      }
+      row.year = yearStr;
+    }
 
-    await c.save();
-
-    const o = c.toJSON();
-    if (o.photoPath) o.photoUrl = `${req.protocol}://${req.get("host")}${o.photoPath}`;
-    res.json(o);
-  } catch (err) {
-    console.error(err);
-    res.status(400).json({ error: err.message || "Failed to update candidate" });
+    await row.save();
+    res.json(withPhotoUrl(req, row));
+  } catch (e) {
+    console.error(e);
+    res.status(400).json({ error: e.message || "Failed to update candidate" });
   }
 });
 
-// Delete
+// DELETE
 router.delete("/:id", async (req, res) => {
   try {
-    const c = await Candidate.findByPk(req.params.id);
-    if (!c) return res.status(404).json({ error: "Not found" });
+    const row = await Candidate.findByPk(req.params.id);
+    if (!row) return res.status(404).json({ error: "Not found" });
 
-    if (c.photoPath) {
-      try {
-        fs.unlinkSync(path.join(__dirname, "..", c.photoPath));
-      } catch (_) {}
-    }
-
-    await c.destroy();
+    safeUnlink(row.photoPath);
+    await row.destroy();
     res.json({ ok: true });
-  } catch (err) {
+  } catch (e) {
+    console.error(e);
     res.status(500).json({ error: "Failed to delete candidate" });
   }
 });
