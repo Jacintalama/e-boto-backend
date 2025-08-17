@@ -7,14 +7,10 @@ const cookieParser = require("cookie-parser");
 
 const app = express();
 
-/* ---- Trust proxy (for secure cookies on prod) ---- */
+/* ---- Trust proxy (secure cookies in prod) ---- */
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
-
-/* ---- DB ---- */
-const db = require(path.join(process.cwd(), "models"));
-const { sequelize } = db;
 
 /* ---- CORS ---- */
 const allowlist = (process.env.CORS_ORIGINS || "")
@@ -32,36 +28,55 @@ const corsOptions = {
   credentials: true,
 };
 
-// Core CORS (most cases this is enough)
 app.use(cors(corsOptions));
-// ✅ Express 5 preflight handlers (use RegExp; avoid "*" or ":path*")
-app.options(/^\/api\/.*$/, cors(corsOptions));
-app.options(/^\/auth\/.*$/, cors(corsOptions));
-// app.options(/^\/uploads\/.*$/, cors(corsOptions)); // enable only if you truly need cross-origin for uploads
+// ✅ use regex (not "*") to avoid path-to-regexp crash
+app.options(/.*/, cors(corsOptions));
 
+/* ---- Parsers ---- */
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 /* ---- Static uploads ---- */
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
-/* ---- Auth middleware (single source of truth) ---- */
+/* ---- DB ---- */
+const db = require(path.join(process.cwd(), "models"));
+const { sequelize } = db;
+
+/* ---- Auth middleware ---- */
 const { requireAuth, requireRole } = require(path.join(process.cwd(), "src", "middleware", "auth"));
 
 /* ---- Routers ---- */
+const votesRouter = require(path.join(process.cwd(), "src", "routes", "votes"));
 const candidateRouter = require(path.join(process.cwd(), "src", "routes", "candidate"));
 const authRouter = require(path.join(process.cwd(), "src", "routes", "auth"));
 const votersRouter = require(path.join(process.cwd(), "src", "routes", "voters"));
 
 /* ---- Mount routes ---- */
-// Admin-only groups (avoid duplicate guards inside the routers)
-app.use("/api/candidates", requireAuth, requireRole("admin"), candidateRouter);
-app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
 
-// Auth routes (login/register/me)
+// 🔓 Auth (login/register/me)
 app.use("/auth", authRouter);
 app.use("/api/auth", authRouter);
-app.use("/api", authRouter); // allows /api/login, /api/register, /api/auth/me
+app.use("/api", authRouter); // supports /api/login, /api/register, /api/auth/me
+
+// 🗳️ Votes (router already checks student via JWT)
+app.use("/api/votes", votesRouter);
+
+// 🖼️ Candidates (students/admin can GET; admin-only for POST/PUT/DELETE)
+app.use(
+  "/api/candidates",
+  (req, res, next) => {
+    requireAuth(req, res, () => {
+      if (req.method === "GET" || req.method === "HEAD") return next();
+      return requireRole("admin")(req, res, next);
+    });
+  },
+  candidateRouter
+);
+
+// 🗳️ Voters (admin-only)
+app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
 
 /* ---- Health ---- */
 app.get("/", (_req, res) => {

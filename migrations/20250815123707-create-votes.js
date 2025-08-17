@@ -11,7 +11,7 @@ module.exports = {
         allowNull: false,
       },
 
-      // ✅ snake_case columns
+      // ✅ snake_case
       voter_id: {
         type: DataTypes.UUID,
         allowNull: false,
@@ -19,6 +19,7 @@ module.exports = {
         onUpdate: "CASCADE",
         onDelete: "CASCADE",
       },
+
       candidate_id: {
         type: DataTypes.UUID,
         allowNull: false,
@@ -38,6 +39,7 @@ module.exports = {
         ),
         allowNull: false,
       },
+
       level: {
         type: DataTypes.ENUM("Elementary", "JHS", "SHS", "College"),
         allowNull: false,
@@ -47,7 +49,7 @@ module.exports = {
       updated_at: { allowNull: false, type: DataTypes.DATE, defaultValue: DataTypes.NOW },
     });
 
-    // ✅ index must match the same column names
+    // ✅ must match the column names above
     await queryInterface.addIndex(
       "votes",
       ["voter_id", "position", "level"],

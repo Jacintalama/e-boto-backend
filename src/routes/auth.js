@@ -230,6 +230,87 @@ router.post("/logout", (_req, res) => {
   });
   res.json({ ok: true });
 });
+/* ---------- CHANGE PASSWORD (student or admin) ---------- 
+Body: { currentPassword: string, newPassword: string }
+Auth: required (uses cookie/Bearer)
+*/
+router.post("/change-password", requireAuth, async (req, res) => {
+  try {
+    const currentPassword = cleanStr(req.body?.currentPassword);
+    const newPassword = cleanStr(req.body?.newPassword);
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: "currentPassword and newPassword are required" });
+    }
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: "New password must be at least 4 characters" });
+    }
+
+    const { role, sub } = req.user || {};
+    if (role === "student") {
+      if (!Voter) return res.status(500).json({ error: "Voter model missing" });
+      const voter = await Voter.findByPk(sub);
+      if (!voter) return res.status(404).json({ error: "Account not found" });
+
+      const stored = voter.passwordHash || voter.password || voter.voter_password || "";
+      let ok = false;
+      if (isBcryptHash(stored)) ok = await bcrypt.compare(currentPassword, stored);
+      else ok = currentPassword === stored;
+      if (!ok) return res.status(401).json({ error: "Current password is incorrect" });
+
+      const hash = await bcrypt.hash(newPassword, 10);
+      if ("passwordHash" in voter) voter.passwordHash = hash;
+      else if ("password" in voter) voter.password = hash;
+      else if ("voter_password" in voter) voter.voter_password = hash;
+      else return res.status(500).json({ error: "No password field in Voter schema" });
+
+      await voter.save();
+
+      // Re-issue token (same payload) para fresh cookie
+      issueToken(res, {
+        sub: String(voter.id),
+        role: "student",
+        schoolId: voter.schoolId,
+        fullName: voter.fullName,
+        department: voter.department,
+      });
+
+      return res.json({ ok: true, message: "Password updated" });
+    }
+
+    if (role === "admin") {
+      const admin = await Admin.findByPk(sub);
+      if (!admin) return res.status(404).json({ error: "Account not found" });
+
+      const stored = admin.admin_password || admin.passwordHash || "";
+      let ok = false;
+      if (typeof admin.checkPassword === "function") {
+        ok = await admin.checkPassword(currentPassword);
+      } else if (isBcryptHash(stored)) {
+        ok = await bcrypt.compare(currentPassword, stored);
+      } else {
+        ok = currentPassword === stored;
+      }
+      if (!ok) return res.status(401).json({ error: "Current password is incorrect" });
+
+      const hash = await bcrypt.hash(newPassword, 10);
+      if ("admin_password" in admin) admin.admin_password = hash;
+      else if ("passwordHash" in admin) admin.passwordHash = hash;
+      else admin.admin_password = hash;
+
+      await admin.save();
+
+      issueToken(res, { sub: String(admin.id), role: "admin", username: admin.admin_username });
+
+      return res.json({ ok: true, message: "Password updated" });
+    }
+
+    return res.status(403).json({ error: "Unsupported role" });
+  } catch (e) {
+    console.error("[AUTH /change-password]", e);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
 
 /* ---------- Ping (quick health) ---------- */
 router.get("/ping", (_req, res) => res.json({ ok: true, scope: "auth" }));
