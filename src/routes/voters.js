@@ -15,6 +15,64 @@ const { Voter } = db;
 // ⬇️ auth middlewares (admin-only)
 const { requireAuth, requireRole } = require(path.join(ROOT_DIR, "src", "middleware", "auth"));
 
+/* ---------- Level/Year validation ---------- */
+function normalizeSchoolId(id) {
+  return String(id || "").trim().toLowerCase();
+}
+
+function normalizeYearForLevel(level, raw) {
+  const s0 = String(raw || "").trim();
+  const s = s0.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ");
+
+  const res = { ok: false, norm: null, reason: "" };
+
+  const g = (n) => `Grade ${n}`;
+
+  if (level === "Elementary") {
+    // Accept Grade 1-6
+    const m = s.match(/^(grade )?(1|2|3|4|5|6)(st|nd|rd|th)?$/);
+    if (m) return { ok: true, norm: g(Number(m[2])) };
+    res.reason = `Invalid for Elementary. Use Grade 1–6 (got “${s0}”).`;
+    return res;
+  }
+
+  if (level === "JHS") {
+    // Accept Grade 7-10
+    const m = s.match(/^(grade )?(7|8|9|10)(st|nd|rd|th)?$/);
+    if (m) return { ok: true, norm: g(Number(m[2])) };
+    res.reason = `Invalid for JHS. Use Grade 7–10 (got “${s0}”).`;
+    return res;
+  }
+
+  if (level === "SHS") {
+    // Accept Grade 11/12 (G11/G12/11th/12th)
+    if (/(^| )g?11(th)?( |$)/.test(s) || /grade 11/.test(s)) return { ok: true, norm: g(11) };
+    if (/(^| )g?12(th)?( |$)/.test(s) || /grade 12/.test(s)) return { ok: true, norm: g(12) };
+    res.reason = `Invalid for SHS. Use Grade 11 or Grade 12 (got “${s0}”).`;
+    return res;
+  }
+
+  if (level === "College") {
+    // Accept 1st–5th Year + synonyms
+    if (/(^| )(1|1st|first|freshman)( |year|$)/.test(s)) return { ok: true, norm: "1st Year" };
+    if (/(^| )(2|2nd|second|sophomore)( |year|$)/.test(s)) return { ok: true, norm: "2nd Year" };
+    if (/(^| )(3|3rd|third|junior)( |year|$)/.test(s)) return { ok: true, norm: "3rd Year" };
+    if (/(^| )(4|4th|fourth|senior)( |year|$)/.test(s)) return { ok: true, norm: "4th Year" };
+    if (/(^| )(5|5th|fifth)( |year|$)/.test(s)) return { ok: true, norm: "5th Year" };
+
+    // Common mistake: SHS values on College
+    if (/grade 1[12]|(^| )g?1[12]( |$)/.test(s)) {
+      res.reason = `This record is not valid for College (got “${s0}”, looks like SHS).`;
+      return res;
+    }
+    res.reason = `Invalid for College. Use 1st–4th/5th Year (got “${s0}”).`;
+    return res;
+  }
+
+  res.reason = `Unknown level “${level}”.`;
+  return res;
+}
+
 /* ---------- Upload setup ---------- */
 const UPLOAD_DIR = path.join(ROOT_DIR, "uploads", "voters");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -76,6 +134,7 @@ router.get("/_debug/whoami", requireAuth, (req, res) => {
 */
 
 
+
 /* ---------- POST /api/voters/import ---------- */
 router.post("/import", upload.single("file"), async (req, res) => {
   const filePath = req.file?.path;
@@ -91,39 +150,126 @@ router.post("/import", upload.single("file"), async (req, res) => {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
 
-    let inserted = 0, updated = 0, skipped = 0;
+    let inserted = 0;
+    let skippedMissing = 0;
+    let invalid = 0;
+    let duplicatesDb = 0;
+    let duplicatesFile = 0;
+
+    const invalidSamples = [];
+    const duplicateSamples = [];
 
     await db.sequelize.transaction(async (t) => {
-      for (const r of rows) {
+      // Preload existing schoolIds for this department for O(1) duplicate checks
+      const existing = await Voter.findAll({
+        where: { department: level },
+        attributes: ["schoolId"],
+        transaction: t,
+      });
+      const existingSet = new Set(
+        existing.map((r) => normalizeSchoolId(r.schoolId))
+      );
+
+      const seenInFile = new Set(); // de-dupe within same upload
+
+      for (let idx = 0; idx < rows.length; idx++) {
+        const r = rows[idx];
+
         const schoolId = pick(r, ["school id", "schoolid", "id number", "student id", "sid", "id"]);
         const fullName = pick(r, ["full name", "fullname", "name"]);
         const course   = pick(r, ["course", "strand", "program"]);
-        const year     = pick(r, ["year", "year level", "grade level", "grade"]);
+        const yearRaw  = pick(r, ["year", "year level", "grade level", "grade"]);
         const status   = toStatus(pick(r, ["status", "voted", "has voted"]));
         const passwordRaw = pick(r, ["password", "pass", "pwd"]); // optional
 
-        if (!schoolId || !fullName || !year) { skipped++; continue; }
+        if (!schoolId || !fullName || !yearRaw) {
+          skippedMissing++;
+          continue;
+        }
 
+        // Validate YEAR against selected LEVEL (department)
+        const val = normalizeYearForLevel(level, yearRaw);
+        if (!val.ok) {
+          invalid++;
+          if (invalidSamples.length < 20) {
+            invalidSamples.push({
+              row: idx + 2, // +2 to account for header row (usually row 1)
+              schoolId,
+              fullName,
+              reason: val.reason,
+            });
+          }
+          continue;
+        }
+        const year = val.norm;
+
+        const idKey = `${level}:${normalizeSchoolId(schoolId)}`;
+
+        // file-level duplicate?
+        if (seenInFile.has(idKey)) {
+          duplicatesFile++;
+          if (duplicateSamples.length < 20) {
+            duplicateSamples.push({
+              row: idx + 2,
+              schoolId,
+              fullName,
+              reason: "Duplicate in file",
+            });
+          }
+          continue;
+        }
+
+        // db-level duplicate? (already exists in this department) → SKIP (do not overwrite)
+        if (existingSet.has(normalizeSchoolId(schoolId))) {
+          duplicatesDb++;
+          if (duplicateSamples.length < 20) {
+            duplicateSamples.push({
+              row: idx + 2,
+              schoolId,
+              fullName,
+              reason: "Already exists in database for this department",
+            });
+          }
+          continue;
+        }
+
+        // Create new record (no overwrite behavior)
         const values = {
-          schoolId, fullName, course: course || null, year, status, department: level,
+          schoolId: String(schoolId).trim(),
+          fullName: String(fullName).trim(),
+          course: course ? String(course).trim() : null,
+          year,
+          status,
+          department: level,
+          ...(passwordRaw ? { passwordHash: await bcrypt.hash(passwordRaw, 10) } : {}),
         };
 
-        if (passwordRaw) values.passwordHash = await bcrypt.hash(passwordRaw, 10);
-
-        // Upsert WITHOUT overwriting password when not provided
-        const [row, created] = await Voter.upsert(values, { transaction: t, returning: true });
-        if (created) inserted++; else updated++;
+        await Voter.create(values, { transaction: t });
+        inserted++;
+        seenInFile.add(idKey);
+        existingSet.add(normalizeSchoolId(schoolId)); // avoid second insert for same id
       }
     });
 
     cleanup(filePath);
-    return res.json({ ok: true, message: `Imported as ${level}`, inserted, updated, skipped });
+    return res.json({
+      ok: true,
+      message: `Imported as ${level}`,
+      inserted,
+      skippedMissing,
+      invalid,
+      duplicatesDb,
+      duplicatesFile,
+      invalidSamples,   // up to 20 sample rows
+      duplicateSamples, // up to 20 sample rows
+    });
   } catch (e) {
     cleanup(filePath);
     console.error("[VOTERS /import]", e);
     return res.status(500).json({ error: "Failed to import voters" });
   }
 });
+
 
 /* ---------- GET /api/voters?department=College ---------- */
 router.get("/", async (req, res) => {

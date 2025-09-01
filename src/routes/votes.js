@@ -271,5 +271,57 @@ router.get("/stats", requireAuth, requireRole("admin"), async (req, res) => {
   }
 });
 
+// POST /api/votes/reset  (admin only)
+router.post("/reset", requireAdmin, async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    // optional: close voting as part of reset (send { close: true } in body)
+    const shouldClose = Boolean(req.body?.close);
+
+    // count before truncate so we can report deleted
+    const beforeCount = await Vote.count({ transaction: t });
+
+    let deleted = 0;
+    const dialect = sequelize.getDialect?.() || sequelize.options?.dialect || "";
+
+    if (dialect === "postgres") {
+      await sequelize.query(
+        'TRUNCATE TABLE "votes" RESTART IDENTITY CASCADE',
+        { transaction: t }
+      );
+      deleted = beforeCount;
+    } else {
+      deleted = await Vote.destroy({
+        where: {},
+        truncate: true,
+        cascade: true,
+        transaction: t,
+      });
+    }
+
+    const [votersReset] = await Voter.update(
+      { status: 0 },
+      { where: {}, transaction: t }
+    );
+
+    if (shouldClose) {
+      await setVotingOpen(false);
+    }
+
+    await t.commit();
+    return res.json({
+      ok: true,
+      deletedVotes: deleted,
+      votersReset,
+      votingClosed: shouldClose || false,
+    });
+  } catch (e) {
+    await t.rollback();
+    console.error("[VOTES POST /reset]", e?.parent?.message || e?.message || e);
+    return res.status(500).json({ error: "Failed to reset votes" });
+  }
+});
+
+
 
 module.exports = router;

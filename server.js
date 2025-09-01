@@ -108,6 +108,8 @@ app.use((err, _req, res, _next) => {
 
 /* ---- Start ---- */
 const PORT = process.env.PORT || 4000;
+const HOST = process.env.HOST || "0.0.0.0";
+app.listen(PORT, HOST, () => console.log(`✅ Server listening on ${HOST}:${PORT}`));
 sequelize
   .authenticate()
   .then(() => console.log("✅ DB connected"))
