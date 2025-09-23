@@ -20,7 +20,6 @@ const allowlist = (process.env.CORS_ORIGINS || "")
 
 const corsOptions = {
   origin(origin, cb) {
-    // allow SSR / same-origin / tools with no Origin header
     if (!origin) return cb(null, true);
     if (allowlist.length === 0 || allowlist.includes(origin)) return cb(null, true);
     return cb(new Error(`Not allowed by CORS: ${origin}`));
@@ -29,7 +28,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-// ✅ use regex (not "*") to avoid path-to-regexp crash
 app.options(/.*/, cors(corsOptions));
 
 /* ---- Parsers ---- */
@@ -54,16 +52,12 @@ const authRouter = require(path.join(process.cwd(), "src", "routes", "auth"));
 const votersRouter = require(path.join(process.cwd(), "src", "routes", "voters"));
 
 /* ---- Mount routes ---- */
-
-// 🔓 Auth (login/register/me)
 app.use("/auth", authRouter);
 app.use("/api/auth", authRouter);
-app.use("/api", authRouter); // supports /api/login, /api/register, /api/auth/me
+app.use("/api", authRouter);
 
-// 🗳️ Votes (router already checks student via JWT)
 app.use("/api/votes", votesRouter);
 
-// 🖼️ Candidates (students/admin can GET; admin-only for POST/PUT/DELETE)
 app.use(
   "/api/candidates",
   (req, res, next) => {
@@ -75,7 +69,6 @@ app.use(
   candidateRouter
 );
 
-// 🗳️ Voters (admin-only)
 app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
 
 /* ---- Health ---- */
@@ -86,7 +79,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ ok: true, env: process.env.NODE_ENV || "dev" });
 });
 
-/* ---- Debug (remove in prod) ---- */
+/* ---- Debug ---- */
 app.get("/api/_debug/whoami", (req, res) => {
   res.json({
     cookieNames: Object.keys(req.cookies || {}),
@@ -111,15 +104,8 @@ const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || "0.0.0.0";
 
 sequelize
-  .authenticate({
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false
-      }
-    }
-  })
-  .then(() => console.log("✅ DB connected with SSL"))
+  .authenticate()
+  .then(() => console.log("✅ DB connected"))
   .catch((err) => console.error("❌ DB connection failed:", err.message));
 
 app.listen(PORT, HOST, () => {

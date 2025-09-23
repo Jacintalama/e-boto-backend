@@ -1,4 +1,3 @@
-// models/index.js
 'use strict';
 
 require('dotenv').config();
@@ -7,7 +6,6 @@ const path = require('path');
 const { Sequelize, DataTypes } = require('sequelize');
 const basename = path.basename(__filename);
 
-// ---- build sequelize from env or config/config.json ----
 let sequelize;
 const fromEnvUrl =
   process.env.DB_URL ||
@@ -17,16 +15,14 @@ const fromEnvUrl =
 const commonOpts = {
   logging: process.env.DEBUG_SQL === '1' ? console.log : false,
   dialect: process.env.DB_DIALECT || 'postgres',
-  // Optional: unicode + sane defaults
   define: {
-    // keep default sequelize behavior; change if your models expect otherwise
     underscored: false,
     freezeTableName: false,
   },
 };
 
-// SSL (useful for hosted DBs)
-if (process.env.DB_SSL === 'true') {
+// 👉 Force SSL when in production or using DATABASE_URL
+if (process.env.NODE_ENV === 'production' || fromEnvUrl) {
   commonOpts.dialectOptions = {
     ssl: { require: true, rejectUnauthorized: false },
   };
@@ -35,16 +31,11 @@ if (process.env.DB_SSL === 'true') {
 if (fromEnvUrl) {
   sequelize = new Sequelize(fromEnvUrl, commonOpts);
 } else {
-  // fallback to individual env vars or config/config.json
   const env = process.env.NODE_ENV || 'development';
-  // If you still keep config.json, you can load it; otherwise env-only is fine
   let config = {};
   try {
-    // Optional: only if you still have config/config.json
     config = require(path.join(__dirname, '../config/config.json'))[env] || {};
-  } catch (_) {
-    // no config.json, that's fine
-  }
+  } catch (_) {}
 
   const username = process.env.DB_USER ?? config.username;
   const password = process.env.DB_PASS ?? config.password;
@@ -61,15 +52,15 @@ if (fromEnvUrl) {
   });
 }
 
-// ---- auto-load all models in /models (except this file) ----
 const db = {};
 fs
   .readdirSync(__dirname)
-  .filter((file) =>
-    file.indexOf('.') !== 0 &&
-    file !== basename &&
-    file.slice(-3) === '.js' &&
-    !file.endsWith('.test.js')
+  .filter(
+    (file) =>
+      file.indexOf('.') !== 0 &&
+      file !== basename &&
+      file.slice(-3) === '.js' &&
+      !file.endsWith('.test.js')
   )
   .forEach((file) => {
     const modelFactory = require(path.join(__dirname, file));
@@ -77,14 +68,12 @@ fs
     db[model.name] = model;
   });
 
-// ---- run associations if defined ----
 Object.keys(db).forEach((modelName) => {
   if (typeof db[modelName].associate === 'function') {
     db[modelName].associate(db);
   }
 });
 
-// ---- export ----
 db.sequelize = sequelize;
 db.Sequelize = Sequelize;
 
