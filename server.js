@@ -111,8 +111,15 @@ const PORT = process.env.PORT || 4000;
 const HOST = process.env.HOST || "0.0.0.0";
 
 sequelize
-  .authenticate()
-  .then(() => console.log("✅ DB connected"))
+  .authenticate({
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false
+      }
+    }
+  })
+  .then(() => console.log("✅ DB connected with SSL"))
   .catch((err) => console.error("❌ DB connection failed:", err.message));
 
 app.listen(PORT, HOST, () => {
