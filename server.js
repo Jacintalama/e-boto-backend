@@ -52,12 +52,14 @@ const authRouter = require(path.join(process.cwd(), "src", "routes", "auth"));
 const votersRouter = require(path.join(process.cwd(), "src", "routes", "voters"));
 
 /* ---- Mount routes ---- */
-app.use("/auth", authRouter);
-app.use("/api/auth", authRouter);
-app.use("/api", authRouter);
 
+// ✅ Auth routes (login, logout, me)
+app.use("/api/auth", authRouter);
+
+// ✅ Votes
 app.use("/api/votes", votesRouter);
 
+// ✅ Candidates (public GET, admin required for POST/PUT/DELETE)
 app.use(
   "/api/candidates",
   (req, res, next) => {
@@ -69,7 +71,9 @@ app.use(
   candidateRouter
 );
 
+// ✅ Voters (admin only)
 app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
+
 
 /* ---- Health ---- */
 app.get("/", (_req, res) => {
