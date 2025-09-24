@@ -27,8 +27,6 @@ const corsOptions = {
   credentials: true,
 };
 
-
-
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
@@ -54,7 +52,6 @@ const authRouter = require(path.join(process.cwd(), "src", "routes", "auth"));
 const votersRouter = require(path.join(process.cwd(), "src", "routes", "voters"));
 
 /* ---- Mount routes ---- */
-
 // ✅ Auth routes (login, logout, me)
 app.use("/api/auth", authRouter);
 
@@ -75,7 +72,6 @@ app.use(
 
 // ✅ Voters (admin only)
 app.use("/api/voters", requireAuth, requireRole("admin"), votersRouter);
-
 
 /* ---- Health ---- */
 app.get("/", (_req, res) => {

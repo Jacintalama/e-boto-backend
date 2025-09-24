@@ -22,13 +22,12 @@ function issueToken(res, payload) {
   if (!process.env.JWT_SECRET) throw new Error("JWT secret not configured");
   const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "7d" });
   const isProd = process.env.NODE_ENV === "production";
-  res.cookie("token", token, {
-    httpOnly: true,
-    sameSite: isProd ? "none" : "lax", // 👈 allow cross-site cookies in prod
-    secure: isProd,                     // 👈 required for "sameSite: none"
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-    path: "/",
-  });
+ res.cookie("token", token, {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "none",
+  path: "/",
+});
   return token;
 }
 
