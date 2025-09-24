@@ -15,21 +15,19 @@ if (process.env.NODE_ENV === "production") {
 /* ---- CORS ---- */
 const allowlist = (process.env.CORS_ORIGINS || "")
   .split(",")
-  .map(origin => origin.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowlist.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-    credentials: true, // 🔥 important for cookies
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    if (allowlist.length === 0 || allowlist.includes(origin)) return cb(null, true);
+    return cb(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+};
+
+
 
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
