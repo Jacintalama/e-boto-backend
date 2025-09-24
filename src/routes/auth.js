@@ -22,15 +22,18 @@ function issueToken(res, payload) {
   if (!process.env.JWT_SECRET) throw new Error("JWT secret not configured");
   const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "7d" });
   const isProd = process.env.NODE_ENV === "production";
+  
   res.cookie("token", token, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: isProd,
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    secure: isProd,       // must be true on Render (uses https)
+    sameSite: "none",     // 👈 allow cross-site cookie
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     path: "/",
   });
+
   return token;
 }
+
 function readTokenFromReq(req) {
   const cookieToken = req.cookies?.token;
   if (cookieToken) return cookieToken;
@@ -223,8 +226,8 @@ router.get("/me", requireAuth, (req, res) => {
 router.post("/logout", (_req, res) => {
   res.cookie("token", "", {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production", // true in Render
+    sameSite: "none",  // 👈 must match login cookie
     maxAge: 0,
     path: "/",
   });
